@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "image-dataset-generator"
+version = "0.1.0"
+description = "CLI to archive comic pages as spatially faithful stage scripts using OpenAI vision"
+requires-python = ">=3.10"
+dependencies = ["Pillow>=10.0"]
+
+[project.scripts]
+image-dataset-generator = "image_dataset_generator:main"
+
+[tool.setuptools]
+py-modules = ["image_dataset_generator"]
