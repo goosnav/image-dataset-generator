@@ -12,6 +12,7 @@ import io
 import json
 import math
 import os
+import ssl
 from pathlib import Path
 import sqlite3
 import sys
@@ -27,7 +28,7 @@ except ImportError:
     print("Pillow is required. Install with: python -m pip install Pillow", file=sys.stderr)
     raise SystemExit(2)
 
-VERSION = "0.1.0"
+VERSION = "0.1.1"
 API_ROOT = "https://api.openai.com/v1"
 EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # USD per million tokens, standard non-regional pricing, checked November 2026.
@@ -162,14 +163,26 @@ class API:
         if body is not None:
             headers["Content-Type"] = content_type
         request = urllib.request.Request(API_ROOT + path, data=body, headers=headers, method=method)
-        try:
-            with urllib.request.urlopen(request, timeout=timeout) as response:
-                raw = response.read()
-                if path.endswith("/content"):
-                    return raw
-                return json.loads(raw)
-        except urllib.error.HTTPError as exc:
-            raise APIError(exc.code, exc.read().decode("utf-8", "replace")) from exc
+        # GET status/results are idempotent; retry short-lived TLS and HTTP failures.
+        # Never transparently replay POST requests: batch creation might have succeeded.
+        for attempt in range(5 if method == "GET" else 1):
+            try:
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    raw = response.read()
+                    if path.endswith("/content"):
+                        return raw
+                    return json.loads(raw)
+            except urllib.error.HTTPError as exc:
+                if method == "GET" and exc.code in (408, 429, 500, 502, 503, 504) and attempt < 4:
+                    time.sleep(min(30, 2 ** attempt))
+                    continue
+                raise APIError(exc.code, exc.read().decode("utf-8", "replace")) from exc
+            except (urllib.error.URLError, TimeoutError, ConnectionError, ssl.SSLError) as exc:
+                if method == "GET" and attempt < 4:
+                    print(f"Transient HTTPS error: {exc}. Retrying {attempt + 1}/4...", file=sys.stderr)
+                    time.sleep(min(30, 2 ** attempt))
+                    continue
+                raise
 
     def response(self, body: dict) -> dict:
         return self._request("POST", "/responses", body, timeout=300)
@@ -214,10 +227,16 @@ def scan_images(root: Path, recursive: bool, output: Path | None = None) -> list
 
 def image_data(path: Path, max_side: int) -> tuple[str, int, int, int, int]:
     """Return data URL, original dimensions, and sent dimensions. Original file is never changed."""
-    Image.MAX_IMAGE_PIXELS = 120_000_000
+    # Large scanned TIFF/PNG originals are supported; downscale prior to converting
+    # high-bit-depth/CMYK modes to RGB to avoid allocating multiple full-size copies.
+    Image.MAX_IMAGE_PIXELS = 500_000_000
     with Image.open(path) as source:
+        orig_w, orig_h = source.size
+        if orig_w * orig_h > 500_000_000:
+            raise ValueError("Image exceeds 500 megapixels; preprocess or tile this scan")
+        source.seek(0)  # First page of multi-page TIFF (one source file = one dataset record).
+        source.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
         im = ImageOps.exif_transpose(source)
-        orig_w, orig_h = im.size
         if im.mode not in ("RGB", "L"):
             if "A" in im.getbands():
                 rgba = im.convert("RGBA")
@@ -801,7 +820,7 @@ def main(argv=None) -> int:
     plan.add_argument("-r", "--recursive", action="store_true")
     plan.add_argument("--model", choices=PRICES, default=DEFAULT_MODEL)
     plan.add_argument("--max-side", type=int, default=2048)
-    plan.add_argument("--max-output-tokens", type=int, default=3600)
+    plan.add_argument("--max-output-tokens", type=int, default=10000)
     plan.add_argument("--transport", choices=("batch", "live"), default="batch")
     run = sub.add_parser("run", help="Create timestamped export in current working directory and process folder")
     run.add_argument("folder", type=Path)
@@ -820,7 +839,10 @@ def main(argv=None) -> int:
     resume = sub.add_parser("resume", help="Collect batches, then submit remaining images (or run live)")
     resume.add_argument("export", type=Path)
     resume.add_argument("--detach", action="store_true")
-    resume.add_argument("--retry-failed", action="store_true")
+    resume.add_argument("--retry-failed", action="store_true", help="Retry ALL failed images (costs extra); use --retry-truncated first")
+    resume.add_argument("--retry-truncated", action="store_true", help="Retry only max_output_tokens failures (costs extra)")
+    resume.add_argument("--max-output-tokens", type=int, default=None, help="Override prior output cap for future requests, e.g. 10000")
+    resume.add_argument("--max-side", type=int, default=None, help="Override prior image downscale limit for future requests")
     resume.add_argument("--poll-seconds", type=int, default=60)
     attach = sub.add_parser("attach-batch", help="Recover an uncertain submission using its OpenAI batch ID")
     attach.add_argument("export", type=Path)
@@ -925,11 +947,32 @@ def main(argv=None) -> int:
         collect_batches(export, client)
         show_status(export)
         return 0
-    if args.command == "resume" and args.retry_failed:
-        db = connect(export)
-        with db:
-            db.execute("UPDATE images SET status='pending', error=NULL WHERE status='error'")
-        db.close()
+    if args.command == "resume":
+        if args.retry_failed and args.retry_truncated:
+            raise ValueError("Choose only one of --retry-failed and --retry-truncated")
+        changed = False
+        if args.max_output_tokens is not None:
+            if not 800 <= args.max_output_tokens <= 32000:
+                raise ValueError("--max-output-tokens must be 800..32000")
+            opts["max_output_tokens"] = args.max_output_tokens
+            changed = True
+        if args.max_side is not None:
+            if not 256 <= args.max_side <= 8192:
+                raise ValueError("--max-side must be 256..8192")
+            opts["max_side"] = args.max_side
+            changed = True
+        if changed:
+            save_manifest(export, manifest)
+        if args.retry_failed or args.retry_truncated:
+            db = connect(export)
+            with db:
+                if args.retry_truncated:
+                    cursor = db.execute("""UPDATE images SET status='pending', error=NULL
+                        WHERE status='error' AND error LIKE '%max_output_tokens%'""")
+                else:
+                    cursor = db.execute("UPDATE images SET status='pending', error=NULL WHERE status='error'")
+            print(f"Queued {cursor.rowcount} failed image(s) for retry; prior costs remain counted.")
+            db.close()
     if args.command == "refine":
         if args.model.startswith("gpt-6.2-") and opts["reasoning"] == "none":
             raise ValueError("GPT-6.2 refinement requires reasoning effort low or higher")
