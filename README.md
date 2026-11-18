@@ -37,7 +37,7 @@ Finally, start a fresh full run:
 
 ```bash
 image-dataset-generator run "/path/to/comics" --recursive \
-  --transport batch --model gpt-6.1-sol \
+  --transport batch --model gpt-6.2-sol \
   --target-usd 49 --hard-cap-usd 54
 ```
 
@@ -85,15 +85,17 @@ The abridged version contains only summary, style, per-panel action, minimal blo
 
 ## Cost model and ceilings
 
-The default uses **GPT-6.1 Sol via OpenAI Batch** (50% lower than standard). This is the high-accuracy / high-volume compromise. The strongest available model may be preferable for particularly complex samples; `refine` or `--model gpt-6-astra` permits that at a higher unit cost. The tool **does not intentionally spend extra money just to meet the $49 target**; spend is driven by the number of images and actual token usage.
+The default uses **GPT-6.2 Sol via OpenAI Batch** (50% lower than standard). GPT-6.2 Sol and Astra launched November 17, 2026. The GPT-6.2 family does not accept `--reasoning none`. This is the high-accuracy / high-volume compromise. The strongest available model may be preferable for particularly complex samples; `refine` or `--model gpt-6.2-astra` permits that at a higher unit cost. The tool **does not intentionally spend extra money just to meet the $49 target**; spend is driven by the number of images and actual token usage.
 
 The CLI stores a November 2026 standard price card per million tokens:
 
 | Model | Input | Output | Batch multiplier |
 |---|---:|---:|---:|
-| GPT-6.1 Sol | $2 | $10 | 0.5x |
+| GPT-6.2 Sol | $2 | $10 | 0.5x |
 | GPT-6.1 Terra | $1 | $5 | 0.5x |
-| GPT-6 Astra | $5 | $25 | 0.5x |
+| GPT-6.2 Astra | $8 | $40 | 0.5x |
+| GPT-6.1 Sol (fallback) | $2 | $10 | 0.5x |
+| GPT-6 Astra (fallback) | $5 | $25 | 0.5x |
 | GPT-5.4 mini | $0.75 | $4.50 | 0.5x |
 
 Before each submission the CLI reserves a conservative **upper-bound estimate** based on prepared image dimensions, approximate vision tokens, prompt length and `max_output_tokens` (default 3600). It will stop submitting when **tracked spent + outstanding reservations** approaches `$54`, leaving a small safety margin. When actual usage returns, unused reservations are released and more batches can be submitted. Request and model token caps are enforced by the API, but actual billed input can vary; therefore **this is not a mathematically guaranteed or account-level OpenAI spending limit**. Costs from other applications, price changes, regional processing surcharges, caching adjustments, failed ambiguous requests, and API-side billing are outside its scope. Set an organization/project budget alert or limit in the OpenAI dashboard as an additional safeguard.
@@ -109,11 +111,11 @@ image-dataset-generator run ./comics --transport live --limit 5
 # More detail at higher cost: may need multiple resumptions / a larger budget
 image-dataset-generator run ./comics -r --max-side 2400 --max-output-tokens 5000
 
-# Pick GPT-6 Astra for a small subset (premium cost)
-image-dataset-generator run ./comics --model gpt-6-astra --limit 10
+# Pick GPT-6.2 Astra for a small subset (premium cost)
+image-dataset-generator run ./comics --model gpt-6.2-astra --limit 10
 
 # After a successful base run, upgrade up to 100 most uncertain/complex pages
-image-dataset-generator refine "./comic-dataset-export-..." --model gpt-6-astra --limit 100
+image-dataset-generator refine "./comic-dataset-export-..." --model gpt-6.2-astra --limit 100
 
 # Inspect export and regenerate results locally
 image-dataset-generator status "./comic-dataset-export-..."

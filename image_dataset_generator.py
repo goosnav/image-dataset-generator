@@ -33,12 +33,14 @@ EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"}
 # USD per million tokens, standard non-regional pricing, checked November 2026.
 # Batch: 50% of standard. Any changes in model rates require updating this table.
 PRICES = {
+    "gpt-6.2-sol": (2.0, 10.0, 0.10),
+    "gpt-6.2-astra": (8.0, 40.0, 0.40),
     "gpt-6.1-sol": (2.0, 10.0, 0.10),
     "gpt-6.1-terra": (1.0, 5.0, 0.05),
     "gpt-6-astra": (5.0, 25.0, 0.50),
     "gpt-5.4-mini": (0.75, 4.50, 0.075),
 }
-DEFAULT_MODEL = "gpt-6.1-sol"
+DEFAULT_MODEL = "gpt-6.2-sol"
 FINAL_BATCH_STATES = {"completed", "failed", "expired", "cancelled"}
 SYSTEM_PROMPT = """You are a meticulous comic archivist, production storyboard artist and transcript editor.
 Analyze the ACTUAL supplied image. Return strictly the requested JSON schema.
@@ -832,7 +834,7 @@ def main(argv=None) -> int:
     refresh.add_argument("export", type=Path)
     refine = sub.add_parser("refine", help="Re-analyze selected weak pages using a stronger model")
     refine.add_argument("export", type=Path)
-    refine.add_argument("--model", choices=PRICES, default="gpt-6-astra")
+    refine.add_argument("--model", choices=PRICES, default="gpt-6.2-astra")
     refine.add_argument("--limit", type=int, default=100)
     refine.add_argument("--detach", action="store_true")
     refine.add_argument("--poll-seconds", type=int, default=60)
@@ -869,6 +871,8 @@ def main(argv=None) -> int:
     if args.command == "run":
         if args.max_side < 256 or args.max_output_tokens < 800:
             raise ValueError("--max-side >=256 and --max-output-tokens >=800 required")
+        if args.model.startswith("gpt-6.2-") and args.reasoning == "none":
+            raise ValueError("GPT-6.2 models require reasoning effort low or higher")
         if not (0 < args.target_usd <= args.hard_cap_usd <= 54.0):
             raise ValueError("Require 0 < target <= hard-cap <= $54")
         options = {"recursive": args.recursive, "model": args.model,
@@ -927,6 +931,8 @@ def main(argv=None) -> int:
             db.execute("UPDATE images SET status='pending', error=NULL WHERE status='error'")
         db.close()
     if args.command == "refine":
+        if args.model.startswith("gpt-6.2-") and opts["reasoning"] == "none":
+            raise ValueError("GPT-6.2 refinement requires reasoning effort low or higher")
         pending = queue_refinement(export, args.model, args.limit)
         print(f"Queued {pending} images for refined analysis with {args.model}")
         manifest = load_manifest(export)

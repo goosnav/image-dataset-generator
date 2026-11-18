@@ -85,7 +85,7 @@ class DatasetTests(unittest.TestCase):
             Image.new("RGB", (150, 300), "white").save(self.root / name)
         (self.root / "nested").mkdir()
         Image.new("RGB", (100, 100), "white").save(self.root / "nested" / "inside.png")
-        self.options = {"recursive": True, "model": "gpt-6.1-sol", "transport": "batch",
+        self.options = {"recursive": True, "model": "gpt-6.2-sol", "transport": "batch",
                         "max_side": 256, "max_output_tokens": 1500, "reasoning": "low",
                         "target_usd": 49.0, "hard_cap_usd": 54.0}
 
@@ -138,7 +138,7 @@ class DatasetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "modified"):
             db = g.connect(export)
             try:
-                g.request_for(db, g.candidates(db)[0], self.root, self.options, "gpt-6.1-sol", True)
+                g.request_for(db, g.candidates(db)[0], self.root, self.options, "gpt-6.2-sol", True)
             finally:
                 db.close()
 
